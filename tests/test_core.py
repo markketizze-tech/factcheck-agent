@@ -123,7 +123,25 @@ def test_groq_json_retries_without_json_mode_after_validation_error(monkeypatch)
     assert core._groq_json("prompt", "test-key", "test-model") == {"ok": True}
     assert requests[0]["json"]["response_format"] == {"type": "json_object"}
     assert "response_format" not in requests[1]["json"]
-    assert "valid JSON object" in requests[1]["json"]["messages"][0]["content"]
+    assert "exactly one valid JSON object" in requests[1]["json"]["messages"][1]["content"]
+
+
+def test_groq_json_extracts_object_from_markdown_response(monkeypatch):
+    from factcheck import core
+    monkeypatch.setattr(
+        core.requests,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "choices": [{
+                    "message": {"content": 'Result:\n```json\n{"ok": true}\n```'}
+                }]
+            },
+            text="",
+        ),
+    )
+    assert core._groq_json("prompt", "test-key", "test-model") == {"ok": True}
 
 
 def test_groq_json_rejects_non_json_response(monkeypatch):

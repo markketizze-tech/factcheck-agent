@@ -78,6 +78,29 @@ def fallback_extract_claims(pages: Iterable[Dict[str, Any]], limit: int = 25) ->
     return claims
 
 
+def _parse_json_object(content: str) -> Dict[str, Any]:
+    if not isinstance(content, str):
+        raise RuntimeError("Groq returned a response that was not valid JSON.")
+    try:
+        result = json.loads(content)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        result = None
+        for index, character in enumerate(content):
+            if character != "{":
+                continue
+            try:
+                candidate, _ = decoder.raw_decode(content, index)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                result = candidate
+                break
+    if not isinstance(result, dict):
+        raise RuntimeError("Groq returned a response that was not valid JSON.")
+    return result
+
+
 def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict[str, Any]:
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not configured.")
@@ -100,6 +123,10 @@ def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict
         error = error_data.get("error", {}) if isinstance(error_data, dict) else {}
         if isinstance(error, dict) and error.get("code") == "json_validate_failed":
             request_data.pop("response_format")
+            request_data["messages"][1]["content"] = (
+                f"{prompt}\n\nOutput-format reminder: return exactly one valid JSON object. "
+                "Do not include explanations, markdown fences, or any text outside the JSON object."
+            )
             response = requests.post(
                 GROQ_CHAT_URL, headers=headers, json=request_data, timeout=timeout
             )
@@ -112,13 +139,7 @@ def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict
         raise RuntimeError(f"Groq API error ({response.status_code}): {detail}")
     data = response.json()
     content = data["choices"][0]["message"]["content"]
-    try:
-        result = json.loads(content)
-    except (json.JSONDecodeError, TypeError) as exc:
-        raise RuntimeError("Groq returned a response that was not valid JSON.") from exc
-    if not isinstance(result, dict):
-        raise RuntimeError("Groq returned JSON, but it was not a JSON object.")
-    return result
+    return _parse_json_object(content)
 
 
 def extract_claims_with_ai(pages: List[Dict[str, Any]], api_key: str,
