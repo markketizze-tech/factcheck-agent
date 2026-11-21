@@ -37,7 +37,7 @@ source .venv/bin/activate        # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
 export GROQ_API_KEY="your-key"
 export TAVILY_API_KEY="your-key"
-export GROQ_MODEL="llama-3.3-70b-versatile"  # optional override
+export GROQ_MODEL="openai/gpt-oss-20b"  # optional override
 streamlit run app.py
 ```
 
@@ -52,7 +52,7 @@ You can also enter both API keys in the app sidebar. For a public deployment, co
 ```toml
 GROQ_API_KEY = "your-groq-key"
 TAVILY_API_KEY = "your-tavily-key"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-20b"
 ```
 
 4. Configure a Groq API key from https://console.groq.com/keys and a Tavily API key. Deploy and test with `sample_trap_document.pdf` and a separate PDF containing claims unknown to the app.

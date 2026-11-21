@@ -14,7 +14,7 @@ import pymupdf
 import requests
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 ALLOWED_STATUSES = {"VERIFIED", "INACCURATE", "FALSE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "REVIEW REQUIRED"}
 
