@@ -9,7 +9,13 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from factcheck.core import DEFAULT_GROQ_MODEL, analyze_pdf, extract_pdf_pages
+from factcheck.core import (
+    DEFAULT_GROQ_MODEL,
+    LEGACY_GROQ_MODEL,
+    analyze_pdf,
+    extract_pdf_pages,
+    resolve_groq_model,
+)
 
 st.set_page_config(page_title="FactCheck | Evidence Layer", page_icon="🔎", layout="wide")
 
@@ -41,7 +47,11 @@ with st.sidebar:
             return os.getenv(name, default)
     groq_key = st.text_input("Groq API key", value=secret_or_env("GROQ_API_KEY"), type="password", help="Used for claim extraction and evidence adjudication.")
     tavily_key = st.text_input("Tavily API key", value=secret_or_env("TAVILY_API_KEY"), type="password", help="Used for live web search.")
-    model = st.text_input("Groq model", value=secret_or_env("GROQ_MODEL", DEFAULT_GROQ_MODEL))
+    configured_model = secret_or_env("GROQ_MODEL", DEFAULT_GROQ_MODEL)
+    model = resolve_groq_model(configured_model)
+    if configured_model == LEGACY_GROQ_MODEL:
+        st.warning(f"The previous default model is not enabled for this account; using {DEFAULT_GROQ_MODEL}.")
+    model = st.text_input("Groq model", value=model)
     max_claims = st.slider("Maximum claims to verify", min_value=1, max_value=25, value=12)
     st.divider()
     st.caption("Keys are used only for requests initiated in this session. Do not paste secrets into a public repository.")

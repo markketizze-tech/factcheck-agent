@@ -5,10 +5,13 @@ import pymupdf
 import pytest
 
 from factcheck.core import (
+    DEFAULT_GROQ_MODEL,
+    LEGACY_GROQ_MODEL,
     extract_pdf_pages,
     fallback_extract_claims,
     _source_quality_hint,
     ALLOWED_STATUSES,
+    resolve_groq_model,
 )
 
 
@@ -62,6 +65,10 @@ def test_allowed_statuses_keep_insufficient_separate_from_false():
 def test_empty_pdf_rejected():
     with pytest.raises(ValueError):
         extract_pdf_pages(b"")
+
+
+def test_legacy_groq_default_resolves_to_available_model():
+    assert resolve_groq_model(LEGACY_GROQ_MODEL) == DEFAULT_GROQ_MODEL
 
 
 def test_groq_json_uses_groq_chat_completions(monkeypatch):

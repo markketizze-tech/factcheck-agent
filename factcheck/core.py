@@ -15,8 +15,16 @@ import requests
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+LEGACY_GROQ_MODEL = "llama-3.3-70b-versatile"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 ALLOWED_STATUSES = {"VERIFIED", "INACCURATE", "FALSE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "REVIEW REQUIRED"}
+
+
+def resolve_groq_model(model: str) -> str:
+    """Replace the earlier enterprise-only default with the supported default."""
+    if model == LEGACY_GROQ_MODEL:
+        return DEFAULT_GROQ_MODEL
+    return model
 
 
 def extract_pdf_pages(pdf_bytes: bytes, max_pages: int = 60, max_chars: int = 50000) -> List[Dict[str, Any]]:
