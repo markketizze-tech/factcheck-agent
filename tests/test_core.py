@@ -98,7 +98,7 @@ def test_groq_json_reports_provider_errors_without_fallback(monkeypatch):
         "post",
         lambda *args, **kwargs: SimpleNamespace(status_code=429, text="rate limit"),
     )
-    with pytest.raises(RuntimeError, match="Groq API error \\(429\\)"):
+    with pytest.raises(RuntimeError, match="Groq rate limit reached"):
         core._groq_json("prompt", "test-key", "test-model")
 
 
@@ -135,6 +135,7 @@ def test_decisive_verdict_requires_primary_or_independent_sources(monkeypatch):
     calls = {"n": 0}
     def one_secondary_source(query, api_key, max_results=6):
         calls["n"] += 1
+        assert max_results == 3
         return [{"source_id": "S1", "title": "One page", "url": "https://example.com/article",
                  "snippet": "The excerpt contradicts the statement.", "published_date": "2026-01-01", "score": 0.7}]
     monkeypatch.setattr(core, "tavily_search", one_secondary_source)

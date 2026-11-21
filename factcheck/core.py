@@ -96,6 +96,10 @@ def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict
         timeout=timeout,
     )
     if response.status_code >= 400:
+        if response.status_code == 429:
+            raise RuntimeError(
+                "Groq rate limit reached. Wait for the provider limit to reset or verify fewer claims at once."
+            )
         detail = response.text[:500]
         raise RuntimeError(f"Groq API error ({response.status_code}): {detail}")
     data = response.json()
@@ -152,7 +156,7 @@ def tavily_search(query: str, api_key: str, max_results: int = 6) -> List[Dict[s
             "topic": "general",
             "max_results": max_results,
             "include_answer": False,
-            "include_raw_content": True,
+            "include_raw_content": False,
         },
         timeout=45,
     )
@@ -168,7 +172,7 @@ def tavily_search(query: str, api_key: str, max_results: int = 6) -> List[Dict[s
             "source_id": f"S{idx}",
             "title": str(item.get("title", "Untitled source"))[:250],
             "url": url,
-            "snippet": str(item.get("content", ""))[:1800],
+            "snippet": str(item.get("content", ""))[:900],
             "published_date": str(item.get("published_date", "") or "Not supplied"),
             "score": item.get("score"),
         })
@@ -199,7 +203,7 @@ def verify_claim(claim: Dict[str, Any], tavily_key: str, groq_key: str,
     search_errors: List[str] = []
     for q in (query_exact, query_context):
         try:
-            raw_sources.extend(tavily_search(q, tavily_key, max_results=6))
+            raw_sources.extend(tavily_search(q, tavily_key, max_results=3))
         except Exception as exc:
             search_errors.append(str(exc)[:180])
     # Deduplicate by canonicalized URL while preserving the first useful excerpt.
@@ -215,7 +219,7 @@ def verify_claim(claim: Dict[str, Any], tavily_key: str, groq_key: str,
         src["source_id"] = f"S{len(enriched)+1}"
         src["quality_hint"] = _source_quality_hint(url)
         enriched.append(src)
-        if len(enriched) >= 10:
+        if len(enriched) >= 4:
             break
     query = query_exact + "\n" + query_context
     if not enriched:
@@ -255,6 +259,7 @@ Return JSON keys: status, confidence (High/Medium/Low), verdict (2-4 sentences),
 (string; say 'Not established' if unsupported), cited_source_ids (array of source IDs only),
 reasoning_checks (array; address date, scope, units/denominator where relevant), limitations.
 Be conservative. Do not cite a source unless its excerpt actually supports the stated point.
+If a claim was historically true but has since become outdated, prefer INACCURATE rather than FALSE.
 """
     try:
         judgment = _groq_json(prompt, groq_key, model)
