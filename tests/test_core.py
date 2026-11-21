@@ -43,6 +43,26 @@ def test_fallback_does_not_extract_opinion_without_number():
     assert fallback_extract_claims(pages) == []
 
 
+def test_ai_extraction_preserves_context_for_search_disambiguation(monkeypatch):
+    from factcheck import core
+    captured = {}
+    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model: captured.update(prompt=prompt) or {
+        "claims": [{
+            "page_number": 1,
+            "original_claim": "45% of NCR sales",
+            "normalized_claim": "45% of NCR sales",
+            "context": "In the Gurugram luxury housing market, 45% of NCR sales were in this segment.",
+            "entities": ["NCR", "Gurugram"],
+        }]
+    })
+    claims = core.extract_claims_with_ai(
+        [{"page_number": 1, "text": "In the Gurugram luxury housing market, 45% of NCR sales were in this segment."}],
+        "test-key",
+    )
+    assert claims[0]["context"].startswith("In the Gurugram")
+    assert "Do not return fragments" in captured["prompt"]
+
+
 def test_scanned_pdf_returns_empty_text_for_app_to_handle():
     doc = pymupdf.open()
     doc.new_page()
@@ -170,6 +190,28 @@ def test_no_search_results_never_returns_false(monkeypatch):
     assert "not proof" in result["verdict"].lower()
 
 
+def test_verify_claim_uses_pdf_context_to_disambiguate_search(monkeypatch):
+    from factcheck import core
+    queries = []
+    monkeypatch.setattr(
+        core,
+        "tavily_search",
+        lambda query, api_key, max_results=6: queries.append(query) or [],
+    )
+    core.verify_claim(
+        {
+            "original_claim": "45% of NCR sales",
+            "normalized_claim": "45% of NCR sales",
+            "context": "Gurugram luxury housing sales in the National Capital Region",
+            "entities": ["Gurugram", "National Capital Region"],
+        },
+        tavily_key="test",
+        groq_key="test",
+    )
+    assert len(queries) == 2
+    assert all("Gurugram" in query for query in queries)
+
+
 def test_false_without_cited_source_is_downgraded(monkeypatch):
     from factcheck import core
     monkeypatch.setattr(core, "tavily_search", lambda query, api_key, max_results=6: [{
@@ -206,3 +248,38 @@ def test_decisive_verdict_requires_primary_or_independent_sources(monkeypatch):
     )
     assert calls["n"] == 2
     assert result["status"] == "INSUFFICIENT EVIDENCE"
+
+
+def test_analyze_pdf_stops_searching_after_groq_rate_limit(monkeypatch):
+    from factcheck import core
+    claims = [
+        {"page_number": 1, "original_claim": f"Claim {i}", "normalized_claim": f"Claim {i}"}
+        for i in range(3)
+    ]
+    calls = []
+    progress = []
+    monkeypatch.setattr(core, "extract_pdf_pages", lambda pdf_bytes: [{"page_number": 1, "text": "claims"}])
+    monkeypatch.setattr(core, "extract_claims_with_ai", lambda *args: claims)
+
+    def rate_limited(claim, *args):
+        calls.append(claim)
+        return {
+            **claim,
+            "status": "REVIEW REQUIRED",
+            "verdict": "Groq rate limit reached.",
+            "_stop_reason": "groq_rate_limit",
+        }
+
+    monkeypatch.setattr(core, "verify_claim", rate_limited)
+    result = core.analyze_pdf(
+        b"pdf",
+        "tavily-key",
+        "groq-key",
+        max_claims=3,
+        progress_callback=lambda current, total, message: progress.append((current, total, message)),
+    )
+    assert len(calls) == 1
+    assert len(result["results"]) == 3
+    assert result["results"][1]["search_query"] == "Not run"
+    assert "not attempted" in result["results"][1]["verdict"].lower()
+    assert any("Stopped early" in message for _, _, message in progress)

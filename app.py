@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -52,7 +53,7 @@ with st.sidebar:
     if configured_model == LEGACY_GROQ_MODEL:
         st.warning(f"The previous default model is not enabled for this account; using {DEFAULT_GROQ_MODEL}.")
     model = st.text_input("Groq model", value=model)
-    max_claims = st.slider("Maximum claims to verify", min_value=1, max_value=25, value=12)
+    max_claims = st.slider("Claims per run (lower is faster)", min_value=1, max_value=6, value=4)
     st.divider()
     st.caption("API keys are loaded from server configuration and are never displayed in the app.")
     st.caption("MVP limits: text-based PDFs, 20 MB, 60 pages. Scanned PDFs need OCR, which is not enabled.")
@@ -76,14 +77,25 @@ if uploaded:
                 st.error("Configure GROQ_API_KEY and TAVILY_API_KEY in Streamlit Secrets or server environment variables before running verification.")
             else:
                 with st.status("Fact-checking document...", expanded=True) as status_box:
-                    st.write("Extracting factual claims from the PDF")
-                    st.write("Searching live web sources for each claim")
-                    st.write("Comparing the claim with retrieved evidence")
+                    st.write("Extracting factual claims, then checking each claim against live sources.")
+                    progress_bar = st.progress(0, text="Extracting claims...")
+
+                    def update_progress(completed: int, total: int, message: str) -> None:
+                        progress_bar.progress(completed / total if total else 0, text=message)
+
                     try:
-                        result = analyze_pdf(pdf_bytes, tavily_key, groq_key, model, max_claims, True)
+                        result = analyze_pdf(
+                            pdf_bytes, tavily_key, groq_key, model, max_claims, True,
+                            progress_callback=update_progress,
+                        )
                         st.session_state["factcheck_result"] = result
                         st.session_state["factcheck_filename"] = uploaded.name
-                        status_box.update(label="Fact-check complete", state="complete", expanded=False)
+                        needs_review = any(r.get("status") == "REVIEW REQUIRED" for r in result.get("results", []))
+                        status_box.update(
+                            label="Fact-check finished; some claims need review" if needs_review else "Fact-check complete",
+                            state="complete",
+                            expanded=needs_review,
+                        )
                     except Exception as exc:
                         status_box.update(label="Fact-check could not complete", state="error", expanded=True)
                         st.error(str(exc))
@@ -107,6 +119,13 @@ if result:
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+    def render_source(src, used_in_verdict: bool) -> None:
+        marker = " ✓ cited in assessment" if used_in_verdict else ""
+        st.markdown(f"**{src.get('source_id')} · {src.get('title')}**{marker}")
+        st.caption(f"{src.get('quality_hint', '')} · Published date: {src.get('published_date', 'Not supplied')}")
+        st.write(src.get("snippet", ""))
+        st.markdown(f"[Open source]({src.get('url')})")
+
     for i, r in enumerate(results, start=1):
         status = r.get("status", "REVIEW REQUIRED")
         title = f"{i}. [{status}] {r.get('original_claim', '')[:115]}"
@@ -116,6 +135,9 @@ if result:
             left.write(r.get("original_claim", ""))
             left.markdown("**Normalized claim**")
             left.write(r.get("normalized_claim", ""))
+            if r.get("context"):
+                left.markdown("**PDF context (for disambiguation)**")
+                left.write(r["context"])
             left.markdown("**Assessment**")
             left.write(r.get("verdict", ""))
             if r.get("corrected_fact") and r.get("corrected_fact") != "Not established":
@@ -127,16 +149,21 @@ if result:
             st.markdown("**Live search queries (two passes)**")
             st.code(r.get("search_query", "Not run"), language="text")
             cited_ids = set(r.get("cited_source_ids", []))
-            st.markdown("**Retrieved sources**")
             sources = r.get("sources", [])
             if not sources:
                 st.info("No usable sources were retrieved.")
-            for src in sources:
-                marker = " ✓ used in verdict" if src.get("source_id") in cited_ids else ""
-                st.markdown(f"**{src.get('source_id')} · {src.get('title')}**{marker}")
-                st.caption(f"{src.get('quality_hint', '')} · Published date: {src.get('published_date', 'Not supplied')}")
-                st.write(src.get("snippet", ""))
-                st.markdown(f"[Open source]({src.get('url')})")
+            cited_sources = [src for src in sources if src.get("source_id") in cited_ids]
+            other_sources = [src for src in sources if src.get("source_id") not in cited_ids]
+            if cited_sources:
+                st.markdown("**Sources cited in the assessment**")
+                for src in cited_sources:
+                    render_source(src, True)
+            if other_sources:
+                if not cited_sources:
+                    st.info("No retrieved result was cited in the assessment. These are unverified search candidates, not evidence for a verdict.")
+                with st.expander(f"Other search results not cited ({len(other_sources)})"):
+                    for src in other_sources:
+                        render_source(src, False)
             if r.get("reasoning_checks"):
                 st.markdown("**Checks considered**")
                 for check in r["reasoning_checks"]:
@@ -162,10 +189,39 @@ if result:
         writer.writerow({k: r.get(k, "") for k in fieldnames})
     st.download_button("Download CSV summary", csv_buf.getvalue(), file_name="factcheck_summary.csv", mime="text/csv")
     md_lines = [f"# Fact-check report: {report['file']}", f"Generated: {stamp}", "", "> AI-assisted evidence triage. Verify primary sources and context before relying on findings.", ""]
+
+    def markdown_inline(value: object) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().replace("|", r"\|")
+
+    def markdown_source(source: dict, cited: bool) -> str:
+        title = markdown_inline(source.get("title", "")).replace("[", r"\[").replace("]", r"\]")
+        url = str(source.get("url", "")).replace(" ", "%20").replace(")", "%29")
+        snippet = markdown_inline(source.get("snippet", ""))[:300]
+        label = "Cited" if cited else "Not cited"
+        return f"- [{title}]({url}) ({label}) — {snippet}"
+
     for i, r in enumerate(results, start=1):
-        md_lines += [f"## {i}. {r.get('status')} — page {r.get('page_number')}", f"**Claim:** {r.get('original_claim')}", f"**Assessment:** {r.get('verdict')}", f"**Corrected fact:** {r.get('corrected_fact')}", "**Sources:**"]
-        for s in r.get("sources", []):
-            md_lines.append(f"- [{s.get('title')}]({s.get('url')}) — {s.get('snippet','')[:300]}")
+        md_lines += [
+            f"## {i}. {r.get('status')} — page {r.get('page_number')}",
+            f"**Claim:** {markdown_inline(r.get('original_claim'))}",
+        ]
+        if r.get("context"):
+            md_lines.append(f"**PDF context:** {markdown_inline(r.get('context'))}")
+        md_lines += [
+            f"**Assessment:** {markdown_inline(r.get('verdict'))}",
+            f"**Corrected fact:** {markdown_inline(r.get('corrected_fact'))}",
+            "**Sources cited in the assessment:**",
+        ]
+        cited_ids = set(r.get("cited_source_ids", []))
+        cited_sources = [s for s in r.get("sources", []) if s.get("source_id") in cited_ids]
+        other_sources = [s for s in r.get("sources", []) if s.get("source_id") not in cited_ids]
+        if cited_sources:
+            md_lines.extend(markdown_source(source, True) for source in cited_sources)
+        else:
+            md_lines.append("- None; no source was cited in the automated assessment.")
+        if other_sources:
+            md_lines += ["", "**Other retrieved results (not cited):**"]
+            md_lines.extend(markdown_source(source, False) for source in other_sources)
         md_lines.append("")
     st.download_button("Download Markdown report", "\n".join(md_lines), file_name="factcheck_report.md", mime="text/markdown")
 

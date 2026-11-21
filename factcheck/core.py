@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import pymupdf
 import requests
@@ -152,7 +152,9 @@ quantities, and factual statements about named entities. Ignore opinions, predic
 questions, and unsupported recommendations unless they contain a checkable factual assertion.
 Preserve exact wording. Do not repair or silently correct claims. Assign the page number shown.
 For each claim return: page_number (integer), original_claim (string), normalized_claim (string),
-claim_type (string), time_reference (string or 'Not stated'), entities (array of strings).
+claim_type (string), time_reference (string or 'Not stated'), entities (array of strings),
+context (a verbatim nearby sentence or heading from the PDF, up to 300 characters).
+Do not return fragments; include enough wording to identify the subject, geography and period.
 If no claims are present return {{"claims": []}}.
 
 PDF TEXT:
@@ -175,6 +177,7 @@ PDF TEXT:
             "claim_type": str(item.get("claim_type", "factual claim"))[:80],
             "time_reference": str(item.get("time_reference", "Not stated"))[:100],
             "entities": [str(x)[:80] for x in item.get("entities", [])[:8]],
+            "context": str(item.get("context", ""))[:300],
         })
     return out
 
@@ -231,8 +234,12 @@ def verify_claim(claim: Dict[str, Any], tavily_key: str, groq_key: str,
     base_query = str(claim.get("normalized_claim") or claim.get("original_claim", "")).strip()
     if not base_query:
         raise ValueError("Claim text is empty.")
-    query_exact = f'"{base_query}" official source fact check'
-    query_context = f'{base_query} latest official data original publication methodology date'
+    entities = claim.get("entities", [])
+    entity_terms = " ".join(str(entity) for entity in entities[:8]) if isinstance(entities, list) else ""
+    pdf_context = str(claim.get("context", ""))[:300]
+    time_reference = str(claim.get("time_reference", ""))
+    query_exact = " ".join(part for part in (base_query, entity_terms, time_reference, "official report") if part)
+    query_context = " ".join(part for part in (pdf_context, base_query, entity_terms, "original publication methodology date") if part)
     # Two complementary live searches reduce dependence on a single search-result ranking.
     raw_sources: List[Dict[str, Any]] = []
     search_errors: List[str] = []
@@ -276,6 +283,7 @@ only evidence you may rely on. Do not use prior knowledge to invent a correction
 CLAIM:
 Original: {claim.get('original_claim')}
 Normalized: {claim.get('normalized_claim')}
+PDF context (for disambiguation only, not evidence): {pdf_context or 'Not supplied'}
 Claim type: {claim.get('claim_type')}
 Time reference: {claim.get('time_reference')}
 PDF page: {claim.get('page_number')}
@@ -299,12 +307,15 @@ If a claim was historically true but has since become outdated, prefer INACCURAT
     try:
         judgment = _groq_json(prompt, groq_key, model)
     except Exception as exc:
-        return {
+        result = {
             **claim, "status": "REVIEW REQUIRED", "confidence": "Low",
             "verdict": f"Sources were retrieved, but automated adjudication failed: {str(exc)[:250]}",
             "corrected_fact": "Not established", "search_query": query, "sources": enriched,
             "limitations": "Human review is required; no automated verdict was produced.",
         }
+        if "Groq rate limit reached" in str(exc):
+            result["_stop_reason"] = "groq_rate_limit"
+        return result
     status = str(judgment.get("status", "INSUFFICIENT EVIDENCE")).upper().strip()
     if status not in ALLOWED_STATUSES:
         status = "INSUFFICIENT EVIDENCE"
@@ -344,7 +355,8 @@ If a claim was historically true but has since become outdated, prefer INACCURAT
 
 def analyze_pdf(pdf_bytes: bytes, tavily_key: str, groq_key: str,
                 model: str = DEFAULT_GROQ_MODEL, max_claims: int = 20,
-                use_ai_extraction: bool = True) -> Dict[str, Any]:
+                use_ai_extraction: bool = True,
+                progress_callback: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     pages = extract_pdf_pages(pdf_bytes)
     if not any(p["text"].strip() for p in pages):
         raise ValueError("No selectable text was found. This appears to be a scanned/image-only PDF; OCR is not enabled in this MVP.")
@@ -353,14 +365,46 @@ def analyze_pdf(pdf_bytes: bytes, tavily_key: str, groq_key: str,
     else:
         claims = fallback_extract_claims(pages, max_claims)
     if not claims:
+        if progress_callback:
+            progress_callback(1, 1, "No factual claims were identified.")
         return {"pages": pages, "claims": [], "results": [], "message": "No factual numeric/date claims were identified."}
     results = []
-    for claim in claims:
+    total = len(claims)
+    for index, claim in enumerate(claims):
+        if progress_callback:
+            progress_callback(
+                index, total,
+                f"Searching and assessing claim {index + 1} of {total}: {claim.get('original_claim', '')[:90]}",
+            )
         try:
-            results.append(verify_claim(claim, tavily_key, groq_key, model))
+            result = verify_claim(claim, tavily_key, groq_key, model)
         except Exception as exc:
-            results.append({**claim, "status": "REVIEW REQUIRED", "confidence": "Low",
-                            "verdict": f"Verification could not be completed: {str(exc)[:250]}",
-                            "corrected_fact": "Not established", "search_query": "Not run", "sources": [],
-                            "limitations": "Live search or verification service failed."})
+            result = {**claim, "status": "REVIEW REQUIRED", "confidence": "Low",
+                      "verdict": f"Verification could not be completed: {str(exc)[:250]}",
+                      "corrected_fact": "Not established", "search_query": "Not run", "sources": [],
+                      "limitations": "Live search or verification service failed."}
+        stop_reason = result.pop("_stop_reason", None)
+        results.append(result)
+        if progress_callback:
+            progress_callback(index + 1, total, f"Finished claim {index + 1} of {total}: {result['status']}")
+        if stop_reason == "groq_rate_limit":
+            for pending_claim in claims[index + 1:]:
+                results.append({
+                    **pending_claim,
+                    "status": "REVIEW REQUIRED",
+                    "confidence": "Low",
+                    "verdict": "Not attempted because Groq reached its rate limit while processing an earlier claim. Retry later or run fewer claims.",
+                    "corrected_fact": "Not established",
+                    "search_query": "Not run",
+                    "sources": [],
+                    "limitations": "No search or adjudication was attempted for this claim.",
+                })
+            if progress_callback:
+                progress_callback(
+                    index + 1, total,
+                    "Stopped early after the Groq rate limit; remaining claims were not sent to search or the model.",
+                )
+            break
+    if progress_callback and len(results) == total:
+        progress_callback(total, total, f"Finished all {total} claims.")
     return {"pages": pages, "claims": claims, "results": results}

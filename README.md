@@ -15,7 +15,7 @@ A Streamlit web app that extracts factual claims from a text-based PDF, searches
    - `CONFLICTING EVIDENCE`
    - `REVIEW REQUIRED` when a provider call fails
 5. Displays source titles, URLs, excerpts, the query used, confidence, corrected fact (when established), and limitations.
-6. Exports JSON, CSV and Markdown reports.
+6. Shows per-claim progress and exports JSON, CSV and Markdown reports. Retrieved but uncited search results are separated from sources used in the assessment.
 
 **Important policy:** no search result is not proof of falsehood. The app only uses `FALSE` when retrieved evidence directly contradicts the claim. Unsupported claims are `INSUFFICIENT EVIDENCE`.
 
@@ -65,12 +65,12 @@ The deployed app needs Groq and Tavily API credentials configured in Streamlit S
 python -m pytest -q
 ```
 
-The unit tests cover text extraction, conservative numeric-candidate extraction, scanned-PDF handling, source-domain hints and safe status separation. They do **not** constitute a live API integration test. Before submission, test with valid API keys and retain screenshots or logs of the live run.
+The unit tests cover text extraction, claim context, scanned-PDF handling, rate-limit short-circuiting, source-domain hints and safe status separation. They do **not** constitute a live API integration test. Before submission, test with valid API keys and retain screenshots or logs of the live run.
 
 ## Limits and responsible use
 
 - Text-based PDFs only; scanned/image-only PDFs need OCR and are rejected with a clear message.
-- Current limits: 20 MB, 60 pages, 50,000 extracted characters, up to 25 claims per document.
+- Current limits: 20 MB, 60 pages, 50,000 extracted characters, and up to 6 claims per run (4 by default). If Groq rate-limits an assessment, later claims are marked not attempted instead of triggering more searches and repeated failures.
 - Live search results are not comprehensive. Search engines may miss primary sources or return stale snippets.
 - The model can misread context. Inspect the source URL and excerpt before relying on a verdict. Decisive verdicts are downgraded when the cited evidence is only one non-primary source; the app looks for an authoritative source or corroboration across independent domains.
 - Current `confidence` is a qualitative model assessment, not a calibrated statistical probability.
