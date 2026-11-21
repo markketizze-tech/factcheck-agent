@@ -27,6 +27,8 @@ A Streamlit web app that extracts factual claims from a text-based PDF, searches
 - Tavily Search API for live web retrieval
 - pytest for deterministic unit tests
 
+The Groq integration uses strict JSON Schema responses with the default GPT-OSS model, low reasoning effort, and a bounded completion size to keep outputs structured and reduce unnecessary token use.
+
 This intentionally keeps the MVP simple to deploy. Search and adjudication are separate service layers, so providers can be swapped later.
 
 ## Run locally

@@ -18,6 +18,53 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 LEGACY_GROQ_MODEL = "llama-3.3-70b-versatile"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 ALLOWED_STATUSES = {"VERIFIED", "INACCURATE", "FALSE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "REVIEW REQUIRED"}
+CLAIM_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "page_number": {"type": "integer"},
+                    "original_claim": {"type": "string"},
+                    "normalized_claim": {"type": "string"},
+                    "claim_type": {"type": "string"},
+                    "time_reference": {"type": "string"},
+                    "entities": {"type": "array", "items": {"type": "string"}},
+                    "context": {"type": "string"},
+                },
+                "required": [
+                    "page_number", "original_claim", "normalized_claim", "claim_type",
+                    "time_reference", "entities", "context",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["claims"],
+    "additionalProperties": False,
+}
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["VERIFIED", "INACCURATE", "FALSE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE"],
+        },
+        "confidence": {"type": "string", "enum": ["High", "Medium", "Low"]},
+        "verdict": {"type": "string"},
+        "corrected_fact": {"type": "string"},
+        "cited_source_ids": {"type": "array", "items": {"type": "string"}},
+        "reasoning_checks": {"type": "array", "items": {"type": "string"}},
+        "limitations": {"type": "string"},
+    },
+    "required": [
+        "status", "confidence", "verdict", "corrected_fact",
+        "cited_source_ids", "reasoning_checks", "limitations",
+    ],
+    "additionalProperties": False,
+}
 
 
 def resolve_groq_model(model: str) -> str:
@@ -101,13 +148,27 @@ def _parse_json_object(content: str) -> Dict[str, Any]:
     return result
 
 
-def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict[str, Any]:
+def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60,
+               response_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not configured.")
     request_data = {
         "model": model,
         "temperature": 0.1,
-        "response_format": {"type": "json_object"},
+        "max_completion_tokens": 2048,
+        "reasoning_effort": "low",
+        "response_format": (
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "factcheck_response",
+                    "strict": True,
+                    "schema": response_schema,
+                },
+            }
+            if response_schema
+            else {"type": "json_object"}
+        ),
         "messages": [
             {"role": "system", "content": "Return one valid JSON object only. Be conservative, distinguish evidence from inference, and do not invent sources or facts."},
             {"role": "user", "content": prompt},
@@ -122,7 +183,7 @@ def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict
             error_data = {}
         error = error_data.get("error", {}) if isinstance(error_data, dict) else {}
         if isinstance(error, dict) and error.get("code") == "json_validate_failed":
-            request_data.pop("response_format")
+            request_data["response_format"] = {"type": "json_object"}
             request_data["messages"][1]["content"] = (
                 f"{prompt}\n\nOutput-format reminder: return exactly one valid JSON object. "
                 "Do not include explanations, markdown fences, or any text outside the JSON object."
@@ -138,7 +199,12 @@ def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict
         detail = response.text[:500]
         raise RuntimeError(f"Groq API error ({response.status_code}): {detail}")
     data = response.json()
-    content = data["choices"][0]["message"]["content"]
+    choice = data["choices"][0]
+    content = choice["message"].get("content")
+    if not content:
+        raise RuntimeError(
+            f"Groq returned empty output (finish reason: {choice.get('finish_reason', 'unknown')})."
+        )
     return _parse_json_object(content)
 
 
@@ -160,7 +226,7 @@ If no claims are present return {{"claims": []}}.
 PDF TEXT:
 {text[:50000]}
 """
-    payload = _groq_json(prompt, api_key, model)
+    payload = _groq_json(prompt, api_key, model, response_schema=CLAIM_EXTRACTION_SCHEMA)
     claims = payload.get("claims", [])
     out: List[Dict[str, Any]] = []
     for item in claims[:limit]:
@@ -305,7 +371,7 @@ Be conservative. Do not cite a source unless its excerpt actually supports the s
 If a claim was historically true but has since become outdated, prefer INACCURATE rather than FALSE.
 """
     try:
-        judgment = _groq_json(prompt, groq_key, model)
+        judgment = _groq_json(prompt, groq_key, model, response_schema=VERDICT_SCHEMA)
     except Exception as exc:
         result = {
             **claim, "status": "REVIEW REQUIRED", "confidence": "Low",

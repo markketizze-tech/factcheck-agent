@@ -46,7 +46,9 @@ def test_fallback_does_not_extract_opinion_without_number():
 def test_ai_extraction_preserves_context_for_search_disambiguation(monkeypatch):
     from factcheck import core
     captured = {}
-    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model: captured.update(prompt=prompt) or {
+    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model, **kwargs: captured.update(
+        prompt=prompt, schema=kwargs.get("response_schema")
+    ) or {
         "claims": [{
             "page_number": 1,
             "original_claim": "45% of NCR sales",
@@ -61,6 +63,7 @@ def test_ai_extraction_preserves_context_for_search_disambiguation(monkeypatch):
     )
     assert claims[0]["context"].startswith("In the Gurugram")
     assert "Do not return fragments" in captured["prompt"]
+    assert captured["schema"] == core.CLAIM_EXTRACTION_SCHEMA
 
 
 def test_scanned_pdf_returns_empty_text_for_app_to_handle():
@@ -94,6 +97,7 @@ def test_legacy_groq_default_resolves_to_available_model():
 def test_groq_json_uses_groq_chat_completions(monkeypatch):
     from factcheck import core
     captured = {}
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
 
     def fake_post(url, **kwargs):
         captured["url"] = url
@@ -105,10 +109,15 @@ def test_groq_json_uses_groq_chat_completions(monkeypatch):
         )
 
     monkeypatch.setattr(core.requests, "post", fake_post)
-    assert core._groq_json("prompt", "test-key", "test-model") == {"ok": True}
+    assert core._groq_json("prompt", "test-key", "test-model", response_schema=schema) == {"ok": True}
     assert captured["url"] == core.GROQ_CHAT_URL
     assert captured["json"]["model"] == "test-model"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["json"]["response_format"]["type"] == "json_schema"
+    assert captured["json"]["response_format"]["json_schema"]["strict"] is True
+    assert captured["json"]["response_format"]["json_schema"]["schema"] == schema
+    assert captured["json"]["reasoning_effort"] == "low"
+    assert captured["json"]["max_completion_tokens"] == 2048
 
 
 def test_groq_json_reports_provider_errors_without_fallback(monkeypatch):
@@ -125,6 +134,7 @@ def test_groq_json_reports_provider_errors_without_fallback(monkeypatch):
 def test_groq_json_retries_without_json_mode_after_validation_error(monkeypatch):
     from factcheck import core
     requests = []
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
 
     def fake_post(url, **kwargs):
         requests.append({**kwargs, "json": dict(kwargs["json"])})
@@ -140,9 +150,9 @@ def test_groq_json_retries_without_json_mode_after_validation_error(monkeypatch)
         )
 
     monkeypatch.setattr(core.requests, "post", fake_post)
-    assert core._groq_json("prompt", "test-key", "test-model") == {"ok": True}
-    assert requests[0]["json"]["response_format"] == {"type": "json_object"}
-    assert "response_format" not in requests[1]["json"]
+    assert core._groq_json("prompt", "test-key", "test-model", response_schema=schema) == {"ok": True}
+    assert requests[0]["json"]["response_format"]["type"] == "json_schema"
+    assert requests[1]["json"]["response_format"] == {"type": "json_object"}
     assert "exactly one valid JSON object" in requests[1]["json"]["messages"][1]["content"]
 
 
@@ -218,7 +228,7 @@ def test_false_without_cited_source_is_downgraded(monkeypatch):
         "source_id": "S1", "title": "One page", "url": "https://example.com/article",
         "snippet": "An unrelated source excerpt", "published_date": "2026-01-01", "score": 0.7
     }])
-    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model, timeout=60: {
+    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model, timeout=60, **kwargs: {
         "status": "FALSE", "confidence": "High", "verdict": "This is false.",
         "corrected_fact": "Not established", "cited_source_ids": [], "reasoning_checks": [], "limitations": ""
     })
@@ -238,7 +248,7 @@ def test_decisive_verdict_requires_primary_or_independent_sources(monkeypatch):
         return [{"source_id": "S1", "title": "One page", "url": "https://example.com/article",
                  "snippet": "The excerpt contradicts the statement.", "published_date": "2026-01-01", "score": 0.7}]
     monkeypatch.setattr(core, "tavily_search", one_secondary_source)
-    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model, timeout=60: {
+    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model, timeout=60, **kwargs: {
         "status": "FALSE", "confidence": "High", "verdict": "Contradicted.",
         "corrected_fact": "A different value", "cited_source_ids": ["S1"], "reasoning_checks": [], "limitations": ""
     })
