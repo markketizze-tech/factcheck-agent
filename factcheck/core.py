@@ -10,7 +10,7 @@ import os
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
-import fitz  # PyMuPDF
+import pymupdf
 import requests
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
@@ -25,7 +25,7 @@ def extract_pdf_pages(pdf_bytes: bytes, max_pages: int = 60, max_chars: int = 50
     if len(pdf_bytes) > 20 * 1024 * 1024:
         raise ValueError("PDF is larger than the 20 MB upload limit.")
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception as exc:
         raise ValueError("This file could not be opened as a valid PDF.") from exc
     if doc.page_count == 0:

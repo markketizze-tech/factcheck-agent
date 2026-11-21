@@ -1,5 +1,5 @@
 import io
-import fitz
+import pymupdf
 import pytest
 
 from factcheck.core import (
@@ -11,7 +11,7 @@ from factcheck.core import (
 
 
 def make_pdf(text: str) -> bytes:
-    doc = fitz.open()
+    doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text((72, 72), text)
     data = doc.tobytes()
@@ -39,7 +39,7 @@ def test_fallback_does_not_extract_opinion_without_number():
 
 
 def test_scanned_pdf_returns_empty_text_for_app_to_handle():
-    doc = fitz.open()
+    doc = pymupdf.open()
     doc.new_page()
     data = doc.tobytes()
     doc.close()
