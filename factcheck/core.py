@@ -81,30 +81,44 @@ def fallback_extract_claims(pages: Iterable[Dict[str, Any]], limit: int = 25) ->
 def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict[str, Any]:
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not configured.")
-    response = requests.post(
-        GROQ_CHAT_URL,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": "Return valid JSON only. Be conservative, distinguish evidence from inference, and do not invent sources or facts."},
-                {"role": "user", "content": prompt},
-            ],
-        },
-        timeout=timeout,
-    )
-    if response.status_code >= 400:
-        if response.status_code == 429:
-            raise RuntimeError(
-                "Groq rate limit reached. Wait for the provider limit to reset or verify fewer claims at once."
+    request_data = {
+        "model": model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": "Return one valid JSON object only. Be conservative, distinguish evidence from inference, and do not invent sources or facts."},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    response = requests.post(GROQ_CHAT_URL, headers=headers, json=request_data, timeout=timeout)
+    if response.status_code == 400:
+        try:
+            error_data = json.loads(response.text)
+        except json.JSONDecodeError:
+            error_data = {}
+        error = error_data.get("error", {}) if isinstance(error_data, dict) else {}
+        if isinstance(error, dict) and error.get("code") == "json_validate_failed":
+            request_data.pop("response_format")
+            response = requests.post(
+                GROQ_CHAT_URL, headers=headers, json=request_data, timeout=timeout
             )
+    if response.status_code == 429:
+        raise RuntimeError(
+            "Groq rate limit reached. Wait for the provider limit to reset or verify fewer claims at once."
+        )
+    if response.status_code >= 400:
         detail = response.text[:500]
         raise RuntimeError(f"Groq API error ({response.status_code}): {detail}")
     data = response.json()
     content = data["choices"][0]["message"]["content"]
-    return json.loads(content)
+    try:
+        result = json.loads(content)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError("Groq returned a response that was not valid JSON.") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("Groq returned JSON, but it was not a JSON object.")
+    return result
 
 
 def extract_claims_with_ai(pages: List[Dict[str, Any]], api_key: str,
