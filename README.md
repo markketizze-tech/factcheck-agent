@@ -41,7 +41,7 @@ export GROQ_MODEL="openai/gpt-oss-20b"  # optional override
 streamlit run app.py
 ```
 
-You can also enter both API keys in the app sidebar. For a public deployment, configure secrets in the hosting platform rather than committing keys.
+The app does not provide API-key inputs in its frontend. Configure credentials as environment variables for local use, or in the hosting platform's secret manager for public deployment. Keys are read server-side and are never rendered by the app.
 
 ## Deploy to Streamlit Community Cloud
 

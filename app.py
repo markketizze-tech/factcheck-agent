@@ -45,8 +45,8 @@ with st.sidebar:
             return str(st.secrets.get(name, os.getenv(name, default)))
         except Exception:
             return os.getenv(name, default)
-    groq_key = st.text_input("Groq API key", value=secret_or_env("GROQ_API_KEY"), type="password", help="Used for claim extraction and evidence adjudication.")
-    tavily_key = st.text_input("Tavily API key", value=secret_or_env("TAVILY_API_KEY"), type="password", help="Used for live web search.")
+    groq_key = secret_or_env("GROQ_API_KEY")
+    tavily_key = secret_or_env("TAVILY_API_KEY")
     configured_model = secret_or_env("GROQ_MODEL", DEFAULT_GROQ_MODEL)
     model = resolve_groq_model(configured_model)
     if configured_model == LEGACY_GROQ_MODEL:
@@ -54,7 +54,7 @@ with st.sidebar:
     model = st.text_input("Groq model", value=model)
     max_claims = st.slider("Maximum claims to verify", min_value=1, max_value=25, value=12)
     st.divider()
-    st.caption("Keys are used only for requests initiated in this session. Do not paste secrets into a public repository.")
+    st.caption("API keys are loaded from server configuration and are never displayed in the app.")
     st.caption("MVP limits: text-based PDFs, 20 MB, 60 pages. Scanned PDFs need OCR, which is not enabled.")
 
 uploaded = st.file_uploader("Upload a PDF to fact-check", type=["pdf"], help="Text-based PDFs only. Up to 20 MB and 60 pages.")
@@ -73,7 +73,7 @@ if uploaded:
                 st.write(p["text"][:1800] or "No selectable text found on this page.")
         if st.button("Run fact-check", type="primary", use_container_width=True):
             if not groq_key or not tavily_key:
-                st.error("Add both the Groq and Tavily API keys in the sidebar before running live verification.")
+                st.error("Configure GROQ_API_KEY and TAVILY_API_KEY in Streamlit Secrets or server environment variables before running verification.")
             else:
                 with st.status("Fact-checking document...", expanded=True) as status_box:
                     st.write("Extracting factual claims from the PDF")
