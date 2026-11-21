@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from factcheck.core import analyze_pdf, extract_pdf_pages, fallback_extract_claims
+from factcheck.core import DEFAULT_GROQ_MODEL, analyze_pdf, extract_pdf_pages
 
 st.set_page_config(page_title="FactCheck | Evidence Layer", page_icon="🔎", layout="wide")
 
@@ -39,9 +39,9 @@ with st.sidebar:
             return str(st.secrets.get(name, os.getenv(name, default)))
         except Exception:
             return os.getenv(name, default)
-    openai_key = st.text_input("OpenAI API key", value=secret_or_env("OPENAI_API_KEY"), type="password", help="Used for claim extraction and evidence adjudication.")
+    groq_key = st.text_input("Groq API key", value=secret_or_env("GROQ_API_KEY"), type="password", help="Used for claim extraction and evidence adjudication.")
     tavily_key = st.text_input("Tavily API key", value=secret_or_env("TAVILY_API_KEY"), type="password", help="Used for live web search.")
-    model = st.text_input("OpenAI model", value=secret_or_env("OPENAI_MODEL", "gpt-4.1-mini"))
+    model = st.text_input("Groq model", value=secret_or_env("GROQ_MODEL", DEFAULT_GROQ_MODEL))
     max_claims = st.slider("Maximum claims to verify", min_value=1, max_value=25, value=12)
     st.divider()
     st.caption("Keys are used only for requests initiated in this session. Do not paste secrets into a public repository.")
@@ -62,15 +62,15 @@ if uploaded:
                 st.markdown(f"**Page {p['page_number']}**")
                 st.write(p["text"][:1800] or "No selectable text found on this page.")
         if st.button("Run fact-check", type="primary", use_container_width=True):
-            if not openai_key or not tavily_key:
-                st.error("Add both API keys in the sidebar before running live verification.")
+            if not groq_key or not tavily_key:
+                st.error("Add both the Groq and Tavily API keys in the sidebar before running live verification.")
             else:
                 with st.status("Fact-checking document...", expanded=True) as status_box:
                     st.write("Extracting factual claims from the PDF")
                     st.write("Searching live web sources for each claim")
                     st.write("Comparing the claim with retrieved evidence")
                     try:
-                        result = analyze_pdf(pdf_bytes, tavily_key, openai_key, model, max_claims, True)
+                        result = analyze_pdf(pdf_bytes, tavily_key, groq_key, model, max_claims, True)
                         st.session_state["factcheck_result"] = result
                         st.session_state["factcheck_filename"] = uploaded.name
                         status_box.update(label="Fact-check complete", state="complete", expanded=False)

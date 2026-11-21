@@ -1,4 +1,6 @@
 import io
+from types import SimpleNamespace
+
 import pymupdf
 import pytest
 
@@ -62,12 +64,43 @@ def test_empty_pdf_rejected():
         extract_pdf_pages(b"")
 
 
+def test_groq_json_uses_groq_chat_completions(monkeypatch):
+    from factcheck import core
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"choices": [{"message": {"content": '{"ok": true}'}}]},
+            text="",
+        )
+
+    monkeypatch.setattr(core.requests, "post", fake_post)
+    assert core._groq_json("prompt", "test-key", "test-model") == {"ok": True}
+    assert captured["url"] == core.GROQ_CHAT_URL
+    assert captured["json"]["model"] == "test-model"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_groq_json_reports_provider_errors_without_fallback(monkeypatch):
+    from factcheck import core
+    monkeypatch.setattr(
+        core.requests,
+        "post",
+        lambda *args, **kwargs: SimpleNamespace(status_code=429, text="rate limit"),
+    )
+    with pytest.raises(RuntimeError, match="Groq API error \\(429\\)"):
+        core._groq_json("prompt", "test-key", "test-model")
+
+
 def test_no_search_results_never_returns_false(monkeypatch):
     from factcheck import core
     monkeypatch.setattr(core, "tavily_search", lambda query, api_key, max_results=6: [])
     result = core.verify_claim(
         {"original_claim": "The market grew by 80% in 2025.", "normalized_claim": "The market grew by 80% in 2025.", "page_number": 1},
-        tavily_key="test", openai_key="test"
+        tavily_key="test", groq_key="test"
     )
     assert result["status"] == "INSUFFICIENT EVIDENCE"
     assert "not proof" in result["verdict"].lower()
@@ -79,13 +112,13 @@ def test_false_without_cited_source_is_downgraded(monkeypatch):
         "source_id": "S1", "title": "One page", "url": "https://example.com/article",
         "snippet": "An unrelated source excerpt", "published_date": "2026-01-01", "score": 0.7
     }])
-    monkeypatch.setattr(core, "_openai_json", lambda prompt, api_key, model, timeout=60: {
+    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model, timeout=60: {
         "status": "FALSE", "confidence": "High", "verdict": "This is false.",
         "corrected_fact": "Not established", "cited_source_ids": [], "reasoning_checks": [], "limitations": ""
     })
     result = core.verify_claim(
         {"original_claim": "The market grew by 80% in 2025.", "normalized_claim": "The market grew by 80% in 2025.", "page_number": 1},
-        tavily_key="test", openai_key="test"
+        tavily_key="test", groq_key="test"
     )
     assert result["status"] == "INSUFFICIENT EVIDENCE"
 
@@ -98,13 +131,13 @@ def test_decisive_verdict_requires_primary_or_independent_sources(monkeypatch):
         return [{"source_id": "S1", "title": "One page", "url": "https://example.com/article",
                  "snippet": "The excerpt contradicts the statement.", "published_date": "2026-01-01", "score": 0.7}]
     monkeypatch.setattr(core, "tavily_search", one_secondary_source)
-    monkeypatch.setattr(core, "_openai_json", lambda prompt, api_key, model, timeout=60: {
+    monkeypatch.setattr(core, "_groq_json", lambda prompt, api_key, model, timeout=60: {
         "status": "FALSE", "confidence": "High", "verdict": "Contradicted.",
         "corrected_fact": "A different value", "cited_source_ids": ["S1"], "reasoning_checks": [], "limitations": ""
     })
     result = core.verify_claim(
         {"original_claim": "The market grew by 80% in 2025.", "normalized_claim": "The market grew by 80% in 2025.", "page_number": 1},
-        tavily_key="test", openai_key="test"
+        tavily_key="test", groq_key="test"
     )
     assert calls["n"] == 2
     assert result["status"] == "INSUFFICIENT EVIDENCE"

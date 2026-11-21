@@ -23,7 +23,7 @@ A Streamlit web app that extracts factual claims from a text-based PDF, searches
 
 - Python + Streamlit UI
 - PyMuPDF for text-based PDF extraction
-- OpenAI Chat Completions API for claim extraction and source-grounded adjudication
+- Groq Chat Completions API for claim extraction and source-grounded adjudication
 - Tavily Search API for live web retrieval
 - pytest for deterministic unit tests
 
@@ -35,9 +35,9 @@ This intentionally keeps the MVP simple to deploy. Search and adjudication are s
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\\Scripts\\activate
 pip install -r requirements.txt
-export OPENAI_API_KEY="your-key"
+export GROQ_API_KEY="your-key"
 export TAVILY_API_KEY="your-key"
-export OPENAI_MODEL="gpt-4.1-mini"  # optional override
+export GROQ_MODEL="llama-3.3-70b-versatile"  # optional override
 streamlit run app.py
 ```
 
@@ -50,14 +50,14 @@ You can also enter both API keys in the app sidebar. For a public deployment, co
 3. In **App settings → Secrets**, add:
 
 ```toml
-OPENAI_API_KEY = "your-openai-key"
+GROQ_API_KEY = "your-groq-key"
 TAVILY_API_KEY = "your-tavily-key"
-OPENAI_MODEL = "gpt-4.1-mini"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 ```
 
-4. Deploy and test with `sample_trap_document.pdf` and a separate PDF containing claims unknown to the app.
+4. Configure a Groq API key from https://console.groq.com/keys and a Tavily API key. Deploy and test with `sample_trap_document.pdf` and a separate PDF containing claims unknown to the app.
 
-Public deployment requires the owner's GitHub/Streamlit account access and paid/free API credentials. No deployed URL is claimed by this repository until an actual deployment has been completed and tested.
+The deployed app needs Groq and Tavily API credentials configured in Streamlit Secrets before live verification can run.
 
 ## Tests
 

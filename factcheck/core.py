@@ -13,7 +13,8 @@ from typing import Any, Dict, Iterable, List, Optional
 import pymupdf
 import requests
 
-OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 ALLOWED_STATUSES = {"VERIFIED", "INACCURATE", "FALSE", "INSUFFICIENT EVIDENCE", "CONFLICTING EVIDENCE", "REVIEW REQUIRED"}
 
@@ -69,11 +70,11 @@ def fallback_extract_claims(pages: Iterable[Dict[str, Any]], limit: int = 25) ->
     return claims
 
 
-def _openai_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict[str, Any]:
+def _groq_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Dict[str, Any]:
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured.")
+        raise RuntimeError("GROQ_API_KEY is not configured.")
     response = requests.post(
-        OPENAI_CHAT_URL,
+        GROQ_CHAT_URL,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={
             "model": model,
@@ -88,13 +89,14 @@ def _openai_json(prompt: str, api_key: str, model: str, timeout: int = 60) -> Di
     )
     if response.status_code >= 400:
         detail = response.text[:500]
-        raise RuntimeError(f"OpenAI API error ({response.status_code}): {detail}")
+        raise RuntimeError(f"Groq API error ({response.status_code}): {detail}")
     data = response.json()
     content = data["choices"][0]["message"]["content"]
     return json.loads(content)
 
 
-def extract_claims_with_ai(pages: List[Dict[str, Any]], api_key: str, model: str = "gpt-4.1-mini", limit: int = 25) -> List[Dict[str, Any]]:
+def extract_claims_with_ai(pages: List[Dict[str, Any]], api_key: str,
+                           model: str = DEFAULT_GROQ_MODEL, limit: int = 25) -> List[Dict[str, Any]]:
     text = "\n\n".join(f"[PAGE {p['page_number']}]\n{p['text']}" for p in pages)
     prompt = f"""
 Extract up to {limit} independently checkable factual claims from the supplied PDF text.
@@ -109,7 +111,7 @@ If no claims are present return {{"claims": []}}.
 PDF TEXT:
 {text[:50000]}
 """
-    payload = _openai_json(prompt, api_key, model)
+    payload = _groq_json(prompt, api_key, model)
     claims = payload.get("claims", [])
     out: List[Dict[str, Any]] = []
     for item in claims[:limit]:
@@ -176,8 +178,8 @@ def _source_quality_hint(url: str) -> str:
     return "Secondary or publisher source - assess provenance"
 
 
-def verify_claim(claim: Dict[str, Any], tavily_key: str, openai_key: str,
-                 model: str = "gpt-4.1-mini") -> Dict[str, Any]:
+def verify_claim(claim: Dict[str, Any], tavily_key: str, groq_key: str,
+                 model: str = DEFAULT_GROQ_MODEL) -> Dict[str, Any]:
     """Search the live web, then adjudicate only against retrieved source material."""
     base_query = str(claim.get("normalized_claim") or claim.get("original_claim", "")).strip()
     if not base_query:
@@ -247,7 +249,7 @@ reasoning_checks (array; address date, scope, units/denominator where relevant),
 Be conservative. Do not cite a source unless its excerpt actually supports the stated point.
 """
     try:
-        judgment = _openai_json(prompt, openai_key, model)
+        judgment = _groq_json(prompt, groq_key, model)
     except Exception as exc:
         return {
             **claim, "status": "REVIEW REQUIRED", "confidence": "Low",
@@ -292,14 +294,14 @@ Be conservative. Do not cite a source unless its excerpt actually supports the s
     }
 
 
-def analyze_pdf(pdf_bytes: bytes, tavily_key: str, openai_key: str,
-                model: str = "gpt-4.1-mini", max_claims: int = 20,
+def analyze_pdf(pdf_bytes: bytes, tavily_key: str, groq_key: str,
+                model: str = DEFAULT_GROQ_MODEL, max_claims: int = 20,
                 use_ai_extraction: bool = True) -> Dict[str, Any]:
     pages = extract_pdf_pages(pdf_bytes)
     if not any(p["text"].strip() for p in pages):
         raise ValueError("No selectable text was found. This appears to be a scanned/image-only PDF; OCR is not enabled in this MVP.")
     if use_ai_extraction:
-        claims = extract_claims_with_ai(pages, openai_key, model, max_claims)
+        claims = extract_claims_with_ai(pages, groq_key, model, max_claims)
     else:
         claims = fallback_extract_claims(pages, max_claims)
     if not claims:
@@ -307,7 +309,7 @@ def analyze_pdf(pdf_bytes: bytes, tavily_key: str, openai_key: str,
     results = []
     for claim in claims:
         try:
-            results.append(verify_claim(claim, tavily_key, openai_key, model))
+            results.append(verify_claim(claim, tavily_key, groq_key, model))
         except Exception as exc:
             results.append({**claim, "status": "REVIEW REQUIRED", "confidence": "Low",
                             "verdict": f"Verification could not be completed: {str(exc)[:250]}",
